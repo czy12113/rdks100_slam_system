@@ -1,0 +1,30 @@
+pointcloud_to_laserscan:
+  ros__parameters:
+    # 雷达水平安装：变换到 base_link 后做水平切片和2D投影。
+    target_frame: "base_link"
+    transform_tolerance: 0.20
+
+    # ── base_link 坐标系下的高度切片范围（Z）──
+    # 实测：Livox Mid-360S 离地 0.25 m（base_link 在车轮接地面 z=0）
+    # 雷达水平扫描层落在 z=0.25，上下扫描覆盖 ±30°（远处覆盖范围有限）。
+    #
+    # min_height: 0.10  → 能看到地面以上 10 cm 起的低矮障碍（如纸箱、踢脚线、电线盒）
+    #   切片下沿不要拉到 0 以下，否则雷达扫到地面的点会被误识别成障碍物。
+    # max_height: 0.90  → 上沿覆盖到桌面、人腿、箱子，超过 1 米的高空障碍不进 costmap
+    #   （避免吊灯/门框等悬空物干扰）。
+    #
+    # ⚠ 如发现低矮障碍（< 15 cm）漏检，可以把 min_height 调到 0.05；
+    #    但调过低会引入地面噪点（地砖反射、电线），需要同步看 RViz costmap 是否有假障碍。
+    min_height: 0.10
+    max_height: 0.90
+
+    angle_min: -3.14159265
+    angle_max: 3.14159265
+    angle_increment: 0.00436332
+    scan_time: 0.1
+
+    range_min: 0.20
+    range_max: 12.0
+
+    use_inf: true
+    inf_epsilon: 1.0

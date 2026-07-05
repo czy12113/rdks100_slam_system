@@ -1,0 +1,46 @@
+# =============================================================================
+# D435i RealSense 相机参数配置
+# realsense2_camera 节点参数
+# =============================================================================
+
+/**:
+  ros__parameters:
+    # 相机序列号（留空则自动选择第一个可用设备）
+    serial_no: ""
+    # USB 端口 ID（留空则自动）
+    usb_port_id: ""
+    # 设备类型
+    device_type: "d435i"
+
+    # RGB 流配置
+    rgb_camera.color_profile: "640x480x30"
+    rgb_camera.color_format: "RGB8"
+    enable_color: true
+
+    # 深度流配置
+    depth_module.depth_profile: "640x480x30"
+    depth_module.depth_format: "Z16"
+    enable_depth: true
+
+    # 深度 + RGB 对齐（对齐到彩色帧，方便 YOLO 叠加深度）
+    align_depth.enable: true
+
+    # IMU（D435i 内置 BMI055）
+    enable_accel: true
+    enable_gyro: true
+    unite_imu_method: "linear_interpolation"
+
+    # 点云（可选，SLAM 后续用）
+    enable_pointcloud: false
+    pointcloud.stream_filter: 2    # RS2_STREAM_COLOR
+
+    # TF 发布
+    publish_tf: true
+    tf_publish_rate: 0.0           # 0.0 = 静态 TF 只发一次
+
+    # Topic 前缀（与 config.py 中 ROS2_TOPIC_RGB_IMAGE 保持一致）
+    # 默认发布到 /camera/color/image_raw 和 /camera/depth/image_rect_raw
+    base_frame_id: "camera_link"
+    color_frame_id: "camera_color_frame"
+    depth_frame_id: "camera_depth_frame"
+    aligned_depth_to_color_frame_id: "camera_color_optical_frame"

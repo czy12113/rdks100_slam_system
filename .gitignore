@@ -1,0 +1,45 @@
+# Secrets
+.env
+.env.*
+!.env.example
+*secrets*
+*secret*
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+venv/
+.venv/
+
+# ROS 2 / colcon
+build/
+install/
+log/
+*.bag
+*.db3
+
+# Frontend
+node_modules/
+frontend/dist/
+.vite/
+
+# Keil / STM32 generated and user-local files
+Obj/
+Listings/
+DebugConfig/
+*.dep
+*.bak
+*.uvgui*
+*.uvguix*
+*.saved_uv4
+*.log
+*:Zone.Identifier
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+!.vscode/extensions.json

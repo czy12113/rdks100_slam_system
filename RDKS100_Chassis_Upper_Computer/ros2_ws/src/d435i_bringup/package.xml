@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>d435i_bringup</name>
+  <version>0.0.1</version>
+  <description>D435i RealSense 相机启动包，负责启动 realsense2_camera 节点并桥接到 Web 后端</description>
+  <maintainer email="kkk@todo.todo">kkk</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- ROS2 核心 -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <!-- RealSense2 相机驱动 -->
+  <exec_depend>realsense2_camera</exec_depend>
+
+  <!-- Launch 工具 -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

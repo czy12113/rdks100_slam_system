@@ -1,0 +1,82 @@
+# slam_toolbox 手持雷达专用配置
+# 完全基于扫描匹配，不依赖里程计
+# 针对手持LD14P雷达优化
+
+slam_toolbox:
+  ros__parameters:
+
+    # Plugin params
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # ROS Parameters
+    odom_frame: base_link  # 关键修改！不使用odom，直接map->base_link
+    map_frame: map
+    base_frame: base_link
+    scan_topic: /scan
+    use_map_saver: true
+    mode: mapping
+
+    # 关键！完全依赖扫描匹配
+    use_scan_matching: true
+    use_scan_barycenter: true
+    
+    # 极低的移动阈值 - 让SLAM对任何移动都敏感
+    minimum_travel_distance: 0.01  # 1cm就处理
+    minimum_travel_heading: 0.01   # 0.57度就处理
+    
+    # 扫描匹配参数 - 增强匹配能力
+    scan_buffer_size: 20  # 增加缓冲
+    scan_buffer_maximum_scan_distance: 15.0
+    link_match_minimum_response_fine: 0.05  # 降低阈值，更容易匹配
+    link_scan_maximum_distance: 2.0  # 增加搜索距离
+    loop_search_maximum_distance: 5.0  # 增加回环搜索距离
+    do_loop_closing: true 
+    loop_match_minimum_chain_size: 5  # 降低回环链长度要求
+    loop_match_maximum_variance_coarse: 5.0  # 增加方差容忍度
+    loop_match_minimum_response_coarse: 0.2  # 降低粗匹配阈值
+    loop_match_minimum_response_fine: 0.3  # 降低精匹配阈值
+
+    # 相关性搜索空间参数 - 大幅增加搜索范围
+    correlation_search_space_dimension: 2.0  # 2米搜索范围
+    correlation_search_space_resolution: 0.005  # 更精细的搜索
+    correlation_search_space_smear_deviation: 0.05
+
+    # 回环检测参数
+    loop_search_space_dimension: 10.0
+    loop_search_space_resolution: 0.05
+    loop_search_space_smear_deviation: 0.03
+
+    # 扫描匹配器参数 - 降低权重，增加灵活性
+    distance_variance_penalty: 0.3  # 降低距离惩罚
+    angle_variance_penalty: 0.5  # 降低角度惩罚
+
+    fine_search_angle_offset: 0.00349
+    coarse_search_angle_offset: 0.5  # 增加粗搜索角度
+    coarse_angle_resolution: 0.0349
+    minimum_angle_penalty: 0.7  # 降低角度惩罚
+    minimum_distance_penalty: 0.3  # 降低距离惩罚
+    use_response_expansion: true
+    
+    # 地图更新参数 - 快速更新
+    map_update_interval: 0.5  # 0.5秒更新一次
+    resolution: 0.05
+    max_laser_range: 12.0
+    minimum_time_interval: 0.05  # 50ms就可以处理新扫描
+    
+    # TF相关
+    transform_publish_period: 0.02
+    tf_buffer_duration: 30.0
+    stack_size_to_use: 40000000
+    enable_interactive_mode: true
+    
+    # 调试参数
+    throttle_scans: 1  # 处理每一帧
+    transform_timeout: 0.5  # 增加超时容忍度
+    
+    # 其他
+    debug_logging: false

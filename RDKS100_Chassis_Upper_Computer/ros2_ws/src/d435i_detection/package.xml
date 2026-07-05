@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>d435i_detection</name>
+  <version>0.0.1</version>
+  <description>
+    D435i + YOLOv5 目标检测 + 深度测距 ROS2 节点。
+    订阅 /camera/camera/color/image_raw 和 /camera/camera/aligned_depth_to_color/image_raw，
+    发布检测结果到 /detection/results（自定义 JSON）和
+    /detection/annotated_image（带标注 RGB 帧）。
+    CPU 先行验证，后续可迁移到 BPU 加速。
+  </description>
+  <maintainer email="kkk@todo.todo">kkk</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <!-- ROS2 核心 -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>vision_msgs</exec_depend>
+
+  <!-- 图像工具 -->
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>image_transport</exec_depend>
+
+  <!-- Launch -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <!-- Python 第三方（系统已装）: torch, torchvision, opencv-python, numpy -->
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

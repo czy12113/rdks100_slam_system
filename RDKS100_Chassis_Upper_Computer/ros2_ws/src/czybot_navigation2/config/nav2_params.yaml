@@ -1,0 +1,1076 @@
+# =============================================================================
+# RDK S100 阿克曼小车 Nav2 参数（与 STM32 ChassisParams.h 全面对齐）
+# -----------------------------------------------------------------------------
+# v8.1 (current) STM32 端速度标定根治 + v8.0 提速回滚.
+#
+# 【v8.0 失败的根因复盘 — 之前方向搞反了】
+# 现场标定 (用户实测):
+#   命令 0.20 m/s × 1s (ros2 topic pub -r 10 --times 10)
+#   → /odom 报告 position.x = 0.2401975... (0.24 m, 含 CMD_TIMEOUT 300ms)
+#   → 实车实测走 0.47 m (卷尺)
+# 也就是说 odom 报告只占真值的 51% — **odom 是低估, 不是高估**!
+#
+# v8.0 当时错误假设"启动补偿让 odom 高估", 于是用 _last_intent_v 代替
+# _last_tx_v 做积分, 再把 MPPI 带宽抬到 [0.08, 0.20] 与门槛对齐。前者
+# 改了等于没改 (intent=tx 在 cmd≥0.08 时本就一致), 后者反而让真车跑
+# 得更快, 高速下开环 odom 累积误差被放大, 漂移更严重。
+#
+# 【v8.1 定位的真根因】
+# 在 STM32 端 ROS2Protocol.c::LinearVelToMotorSpeed():
+#   speed_pwm_pct = (vel_ms / MAX_LINEAR_SPEED) * 100
+#   AckermannTurn(speed_pwm_pct, ...) → I2CMotor_SetSpeed → PWM 占空比
+# 此处 MAX_LINEAR_SPEED 是"假设 PWM 100% 时车跑多快"的标定值。
+# ChassisParams.h 默认 0.60f, 但真车实测 PWM 33% 跑 0.39 m/s,
+# 反推 PWM 100% 对应 ~1.18 m/s, 原标定低估 2 倍。结果就是:
+#   上位机命令 0.20 m/s → STM32 算 PWM = 0.20/0.60*100 = 33%
+#   PWM 33% 真车跑 ~0.39 m/s (因为真值是 1.18)
+#   stm32_bridge 开环 odom 用 0.20 积分 → 报 0.20 m/s
+#   真车 0.39 m/s, odom 0.20 m/s → odom 低估约 51%
+#   AMCL: map→odom 跟不上真车实际位移
+#   → 激光投影到 map 比建图位置朝车反方向偏 (红框逼近车的现象)
+#
+# 【v8.1 修复矩阵】
+#   1. STM32 ChassisParams.h MAX_LINEAR_SPEED 0.60 → 1.18 (用户已烧录)
+#      → 命令 0.20 m/s, STM32 算 PWM = 0.20/1.18*100 ≈ 17%
+#      → PWM 17% 真车跑 ~0.20 m/s, odom 与真车一致
+#   2. nav2_params.yaml 回滚 v8.0 提速 (本文件):
+#      - MPPI vx_max 0.20 → 0.10, wz_max 0.80 → 0.33
+#      - vx_std 0.04 → 0.025, prune_distance 1.2 → 0.6
+#      - AckermannConstraints.min_turning_r 0.25 → 0.30
+#      - velocity_smoother max_velocity 同步回 [0.10, 0, 0.33]
+#      理由: STM32 标定准了, 但开环 odom 没有编码器反馈, 速度越高
+#      累积误差速率越快。0.10 m/s 比 0.20 m/s 漂移积累慢 2x。
+#   3. AMCL alpha1-4 0.3 → 0.2 (略加信 odom)
+#      理由: STM32 标定准后, odom 数值轴线对了, 噪声水平低于以前,
+#      可以略加信 odom; 但因开环本质仍有累积误差, 不下到 0.1。
+#   4. stm32_bridge.py 的 _last_intent_v 改动保留 (v8.0 遗留, 无害)
+#      之前用 _last_tx_v 积分, 改 _last_intent_v 后在 cmd≥0.08 时
+#      行为一致 (启动补偿后 tx=intent); 在 cmd<0.08 时 intent 反映
+#      MPPI 真实意图, 不再被人为放大。逻辑上更干净, 保留。
+#
+# 【v8.1 已知残余漂移 + 根治路径】
+#   开环 odom 的累积误差是物理本质 (没编码器反馈), v8.1 把误差速率
+#   降到 0.10 m/s 量级, 但长距离行驶仍会累积。彻底根治需要走方案 Z
+#   (闭环编码器 odom), 即 v7.0 失败方案重启:
+#     - 解决 I2C 总线 motor write vs encoder read 阻塞 (非阻塞状态机)
+#     - 启用 ChassisParams.h ODOMETRY_READ_ENCODER=1
+#     - launch.py odom_source 切回 'closed_loop'
+#   这是后续 v9.0 的工作, 不在 v8.1 范围。
+#
+# 【现场可观测的验证点】
+#   1. 重做标定: ros2 topic pub -r 10 --times 10 /cmd_vel ... 0.10 m/s
+#      期望: /odom 报 ~0.10 m, 实车 ~0.10 m (误差 < 10%)
+#      若仍有 ±20% 误差, MAX_LINEAR_SPEED 还需要再标定一次
+#   2. 行驶中观察 RViz local_costmap, 实时点云应基本贴蓝框
+#      (低速下漂移 < 5 cm, 远低于 v8.0 时的 ~10 cm)
+#   3. 到点后红框落到蓝框, 收敛时间 3~5s
+#
+# 【失败回退路径】
+#   - 若仍漂: 启动 stm32_bridge debug, 录 /stm32_bridge/tx_cmd + /odom
+#     + 卷尺标定多点 (0.05/0.10/0.20 m/s), 验证 MAX_LINEAR_SPEED 线性度
+#   - 若到点不准 (xy_goal 偏差 > 0.2 m): 走方案 Z 闭环编码器 odom
+#
+# -----------------------------------------------------------------------------
+# v8.0 历史 (失败) 基于"odom 高估"的错误假设把命令空间抬到 [0.08, 0.20].
+#   实际数据证明 odom 是低估, 真因在 STM32 端 MAX_LINEAR_SPEED 标定不准,
+#   v8.1 把 v8.0 yaml 提速回滚, 保留 stm32_bridge.py 的 _last_intent_v 改动.
+# -----------------------------------------------------------------------------
+# v7.2 历史 收敛速度折中. v7.1 行驶不撞了, 但到点后实时渲染障碍物
+#   要 ~10 秒才慢慢"吸"回到建图静态障碍物位置. recovery_alpha_fast 0.05 → 0.15
+#   现场验证仍不达标 (红框不回蓝框, 系统性偏置), 真因在 STM32 标定, v8.1 根治.
+# -----------------------------------------------------------------------------
+# v7.1 历史 行驶撞墙 + 障碍物漂移修复. v6.10 alpha_fast=0.3 + update_min_d=0.02
+#   行驶时 AMCL 持续注入随机粒子, map→odom TF 高频抖动, costmap 障碍物漂移,
+#   MPPI 误判可通行间隙 → 撞墙. 手动遥控不经 AMCL 故正常.
+#   v7.1 三件套:
+#     - amcl.alpha1-4: 0.5 → 0.3 (粒子云收紧)
+#     - amcl.recovery_alpha_fast: 0.3 → 0.05 (低注入率, 减抖)
+#     - amcl.recovery_alpha_slow: 0.005 → 0.001 (默认值)
+#     - amcl.update_min_d/a: 0.02 → 0.05 (降低更新频率, 减抖)
+#   取舍: 开环 odom 下放弃 v6.10 的"停车回红框"能力, 换取行驶稳定.
+#   v7.0 闭环 odom 方案因 I2C 阻塞撞墙已回滚到 STM32 端 v6.10 基线
+#   (ODOMETRY_READ_ENCODER=0 + odom_source=open_loop).
+# -----------------------------------------------------------------------------
+# 关键约束（必须与 STM32/USER/ChassisParams.h、stm32_bridge.py 保持一致）：
+#   MAX_LINEAR_SPEED  = 0.60 m/s
+#   MAX_ANGULAR_SPEED = 1.20 rad/s
+#   底盘类型 = 阿克曼，不能原地旋转
+#   极小转弯半径 r_min = v / w = 0.6 / 1.2 = 0.50 m
+#
+# 改动概要（v3 真车上线 + Livox Mid360 滤波链对齐）：
+#   1. 所有 scan 订阅 → /scan_filtered（与 czybot_slam 滤波链一致）
+#   2. 全栈 enable_stamped_cmd_vel: false
+#      stm32_bridge 订阅 geometry_msgs/Twist，TwistStamped 它收不到。
+#   3. amcl.set_initial_pose: true，开机即在原点定位，免去 RViz 手点。
+#      若每次开机姿态不同，可以在 launch 里覆盖 initial_pose.{x,y,yaw}。
+#   4. AMCL scan_topic 改为 scan_filtered；laser_max_range 与雷达上限对齐。
+#
+# 改动概要（v2 阿克曼化）：
+#   1. MPPIController.motion_model: DiffDrive → Ackermann
+#      vx_max=0.60 / vy_max=0.0 / wz_max=1.20，禁止侧移
+#      AckermannConstraints.min_turning_r 设为 0.45 m
+#   2. AMCL motion model: DifferentialMotionModel → OmniMotionModel
+#      （ROS2 AMCL 没有专门的 ackermann，OmniMotionModel 在小角度噪声场景比 Diff 更合适）
+#      ※ 如果定位精度不够，可以再换回 Differential 并适当增大 alpha 噪声
+#   3. behavior_plugins 移除 spin 与 backup（阿克曼不能原地旋转、后退依赖舵机）
+#      只保留 drive_on_heading / wait / assisted_teleop
+#   4. velocity_smoother：max_velocity 与 STM32 一致 [0.60, 0.0, 1.20]
+#      加减速度 1.0/-1.5（阿克曼禁止过激抖动）
+#   5. collision_monitor.cmd_vel_out_topic 修复成 /cmd_vel
+#      之前误写为 /diff_drive_controller/cmd_vel 导致 stm32_bridge 收不到
+#   6. controller_server.min_y_velocity_threshold 改大到 1.0
+#      让阿克曼方向上 vy 不会被当成有效速度
+#   7. goal_checker.yaw_goal_tolerance 放宽到 0.30（约 17°）
+#      避免阿克曼到点后还要小幅旋转
+# =============================================================================
+
+amcl:
+  ros__parameters:
+    # ★ v7.1 行驶稳定性修复：alpha 0.5 → 0.3
+    # ────────────────────────────────────────────────────────
+    # v6.10 现场暴露问题：开 Nav2 自动导航时小车撞墙、costmap 里
+    # 障碍物漂移。手动遥控正常 (走 STM32 直链, 不经 AMCL)。
+    # 根因是 v6.10 那组激进参数 (alpha=0.5 + update_min_d=0.02 +
+    # recovery_alpha_fast=0.3) 在 0.1m/s 行驶下:
+    #   - 每 200ms AMCL 更新一次
+    #   - 每次更新都注入 30% 随机粒子
+    #   - 粒子加权重心持续 ±2cm 抖动
+    #   - map→odom TF 抖动 → costmap 里激光投影点位置抖动
+    #   - 障碍物在 costmap 中漂移
+    #   - MPPI 看到的"前方间隙"也跟着抖, 它误判可通行 → 撞
+    # v6.10 当时只验证了停车收敛, 没验证行驶轨迹, 导致问题被掩盖.
+    #
+    # v7.1 取舍: 在没有真编码器闭环的前提下, 行驶稳定 > 停车精度.
+    #   - alpha 0.5 → 0.3: 让 AMCL 更信任 odom 短期增量, 粒子云
+    #     收得更紧, 减少行驶时的高频抖动
+    #   - 副作用: 静态停车后偏置可能从 v6.10 的 "2~5秒收敛" 退化到
+    #     "残留 5~10cm 偏置, 不再回到红框". 这个偏置在 RViz 上看到
+    #     难看但不撞墙, 比赛优先级低.
+    # alpha5 保持 0.1: 阿克曼侧滑量级未变.
+    # ★ v8.1: alpha1-4 0.3 → 0.2 (STM32 标定准后略加信 odom)
+    # ────────────────────────────────────────────────────────
+    # v7.1 把 alpha 设 0.3 是因为开环 odom 噪声大（受 STM32 端 0.60 vs
+    # 真值 1.18 的标定误差 2x 污染）。v8.1 烧录 1.18 后, odom 数值轴线
+    # 与真车一致, 噪声水平已大幅下降, 略加信 odom (0.3→0.2)。
+    # 不下到 0.1 是因为开环本质仍无编码器反馈, 累积误差仍存在。
+    alpha1: 0.2
+    alpha2: 0.2
+    alpha3: 0.2
+    alpha4: 0.2
+    alpha5: 0.1
+    base_frame_id: "base_link"
+    beam_skip_distance: 0.5
+    beam_skip_error_threshold: 0.9
+    beam_skip_threshold: 0.3
+    do_beamskip: false
+    global_frame_id: "map"
+    lambda_short: 0.1
+    # ★ v6.6 漂移修复：likelihood_max_dist 2.0 → 0.5
+    # ────────────────────────────────────────────────────────
+    # likelihood field 算法会把"激光端点到最近障碍物的距离"映射成似然，
+    # 该距离 > laser_likelihood_max_dist 的栅格直接给最大距离值（似然趋零）。
+    # 原 2.0 表示"激光偏差 2m 内仍认为是有效观测"，对 Mid-360 这种
+    # 2~3 cm 噪声的雷达过于宽松：粒子位姿即使偏差 1m，似然差异也很小，
+    # AMCL 不会把粒子云收紧。
+    # 改 0.5：激光偏差 > 50 cm 时似然显著下降，AMCL 立刻惩罚漂走的粒子。
+    laser_likelihood_max_dist: 0.5
+    laser_max_range: 100.0
+    laser_min_range: -1.0
+    laser_model_type: "likelihood_field"
+    # ★ v6.6 漂移修复：max_beams 30 → 60
+    # ────────────────────────────────────────────────────────
+    # scan 经过 pointcloud_to_laserscan 已降到 ~240 点，max_beams=30
+    # 只用了 12% 的激光证据，AMCL 在长走廊/对称环境下根本不够区分粒子。
+    # 提到 60（用满 25%）让 AMCL 拿到更多观测，配合 sigma_hit 收紧
+    # 能在 1~2 个更新周期内把粒子云收拢回真实位姿。
+    # 实测 RK S100 上 60 beam × 1500 粒子的 AMCL 更新 < 50ms，仍有余量。
+    max_beams: 60
+    # ★ v6.4：粒子数适度上调（200→400 / 800→1500），增强 KLD 收敛能力
+    # RK S100 实测 1500 粒子的 AMCL 更新耗时 < 30ms，完全在预算内。
+    # 之前 200/800 是为了极限省 CPU，但代价是粒子云覆盖不够，
+    # 漂移积累几厘米就找不到正确粒子，进一步累积。
+    max_particles: 1500
+    min_particles: 400
+    odom_frame_id: "odom"
+    pf_err: 0.05
+    pf_z: 0.99
+    # ★ v7.2 收敛速度折中：alpha_fast 0.05 → 0.15
+    # ────────────────────────────────────────────────────────
+    # 历史记录:
+    #   v6.4: 默认 0.0 → 0.1, 开启 KLD 短/长期粒子比值监控的随机粒子
+    #         注入, 防止绑架问题永久失定位.
+    #   v6.10: 0.1 → 0.3, 想用激进探索抹平开环 odom 的 20cm 静态偏置.
+    #         停车时 OK (2~5 秒抖动靠回红框), 但行驶时撞墙.
+    #   v7.1: 0.3 → 0.05, 修复 v6.10 行驶时撞墙 + 障碍物漂移.
+    #         代价: 到点后 ~10s 实时障碍物才慢慢吸回到建图静态位置.
+    #   v7.2: 0.05 → 0.15, v6.10 与 v7.1 的几何中点.
+    #
+    # 为什么 0.15 是更优折中:
+    #   - 0.3 (v6.10) 每帧注入 30% 新粒子, 配合 update_min_d=0.02 (200ms
+    #     更新一次) 形成"高频高幅"双重抖动 → costmap 漂移 → 撞墙
+    #   - 0.05 (v7.1) 仅 5% 注入, 行驶稳但 short/long 权重比要积累
+    #     足够久才会触发显著粒子置换 → 停车收敛慢 (~10s)
+    #   - 0.15 (v7.2): 15% 注入率, 配合 v7.1 保留的 update_min_d=0.05
+    #     (500ms 更新一次), 等效抖动幅度 ≈ v6.10 的 (0.15/0.3)*(0.05/0.02)^-1
+    #     = 0.2 倍, 远低于撞墙阈值; 同时收敛时间 ~3 倍快于 v7.1, 预期
+    #     到点后 3~5s 完成纠偏.
+    #
+    # 残余风险与回退路径:
+    #   - 若静态停车后出现明显跳动 / 行驶又出现障碍物漂移, 回 0.10
+    #   - 若仍嫌慢, 优先动 update_min_d (0.05 → 0.03), 不要再加 alpha_fast
+    recovery_alpha_fast: 0.15
+    # recovery_alpha_slow 配套回到 v6.4 默认.
+    recovery_alpha_slow: 0.001
+    resample_interval: 1
+    # ★ v6.7：开环里程计专用切到 Omni
+    # ────────────────────────────────────────────────────────
+    # DifferentialMotionModel 假设车只能"沿当前朝向"前进，odom 报的
+    # delta_x 必须等于 v*dt*cos(yaw)。开环 odom 把 cmd_vel 积分进去
+    # 但实际可能卡住，这种"指令在动 / 真实没动"的差异在 Diff 模型
+    # 看来是系统性偏置，会持续推动粒子云朝错误方向。
+    # OmniMotionModel 把 odom 当作 (vx, vy, w) 三轴噪声运动，对侧向/
+    # 系统性偏置容忍度高得多 ——
+    # 配合 alpha=0.8 几乎只剩激光在主导后验。
+    robot_model_type: "nav2_amcl::OmniMotionModel"
+    save_pose_rate: 0.5
+    # ★ v6.6 漂移修复：sigma_hit 0.2 → 0.05
+    # ────────────────────────────────────────────────────────
+    # sigma_hit 是 likelihood_field 模型里"激光端点 vs 地图障碍物"
+    # 距离误差的高斯标准差。原 0.2 (20 cm) 是给低成本 2D 雷达准备的
+    # 默认值，对 Mid-360（实测 2~3 cm 噪声）拉得太宽：
+    #   - 粒子偏差 20 cm 时似然仅下降 ~40%，AMCL 觉得"差不多"
+    #   - 粒子云无法收紧，漂移找不到强证据被拉回
+    # 改 0.05 (5 cm) 与 Mid-360 实际精度量级匹配：
+    #   - 粒子偏差 10 cm 时似然下降 ~86%
+    #   - 偏差 20 cm 时似然几乎归零
+    # AMCL 会迅速把粒子云聚拢到激光匹配最好的那块姿态。
+    # 注意：sigma_hit 过小（< 0.03）会让算法对静态地图的微小不一致
+    # 极度敏感（家具挪动、人走动），0.05 是兼顾鲁棒性的稳妥取值。
+    sigma_hit: 0.05
+    tf_broadcast: true
+    # ★ 修复 "Lookup would require extrapolation into the future" 警告
+    #   transform_tolerance：TF 容错窗口
+    #   message_filter_queue_size：消息缓存队列加大，吃下短时抖动
+    transform_tolerance: 1.0
+    message_filter_queue_size: 200
+    # ★ v6.4：触发 AMCL 重定位的最小位移/旋转门槛
+    # ────────────────────────────────────────────────────────
+    # 默认值 d=0.25/a=0.20 意味着小车要走完 25 cm 或转 11° 才更新一次 AMCL。
+    # 阿克曼车 0.15 m/s 巡航 = 1.67s 才更新一次 → 1.67s 内里程计纯靠
+    # 编码器外推 → 漂移完全不被纠正。
+    # 收紧到 d=0.10 / a=0.10：每 10 cm 或 5.7° 更新一次 AMCL，0.15 m/s
+    # 下约 0.67s 更新一次，漂移积累 < 2 cm 就被纠正。
+    # 代价：AMCL CPU 占用上升约 +30%（实测 RK S100 仍有富余）。
+    # ★ v7.1 减抖回退：update_min_d/a 0.02 → 0.05
+    # ────────────────────────────────────────────────────────
+    # 历史记录:
+    #   默认: 0.25 / 0.20 (太宽松, 漂移积累不被纠正)
+    #   v6.4: 0.10 / 0.10
+    #   v6.5: 0.05 / 0.05
+    #   v6.8: 0.02 / 0.02 (跟开环 odom 卡顿打补丁)
+    #   v7.1: 回到 0.05 / 0.05
+    #
+    # 0.02 的副作用是 0.1m/s 巡航下每 200ms 触发一次 AMCL 更新.
+    # 配合 v6.10 的 alpha_fast=0.3, 每次更新都注入 30% 随机粒子,
+    # AMCL 输出位姿持续 ±2cm 抖动. 行驶时 map→odom TF 抖动 →
+    # costmap 障碍物漂移 → MPPI 撞墙.
+    #
+    # 0.05 = 0.1m/s 下每 500ms 更新一次. 配合 v7.1 的 alpha_fast=0.05
+    # 极低注入率, AMCL 输出在行驶中稳定. 0.5s 内开环 odom 顶多漂
+    # 1~2cm, 激光照样能纠回. RK S100 CPU 占用还能下降 ~20%.
+    update_min_a: 0.05
+    update_min_d: 0.05
+    # ★ v6.5 漂移修复：抬高激光信任度，降低随机噪声项
+    # ────────────────────────────────────────────────────────
+    # 现象：2D Goal Pose 后小车走动几秒，全图红点（实时 scan）相对静态
+    #       地图整体平移 → AMCL 跟不上 odom 累积误差。
+    # 原因：z_hit=0.5 / z_rand=0.5 时，AMCL 每条激光束有 50% 概率被
+    #       当成"随机噪声"忽略，对 Mid-360 这种点质量很好的雷达过于保守。
+    # 修复：z_hit 0.5 → 0.9，z_rand 0.5 → 0.05，让 AMCL 更信激光，
+    #       一旦发现激光和地图不符立刻把粒子云往激光匹配方向拉。
+    z_hit: 0.9
+    z_max: 0.05
+    z_rand: 0.05
+    z_short: 0.05
+    scan_topic: scan_filtered
+    # ★ v6 关键修复：set_initial_pose 改回 false
+    # ────────────────────────────────────────────────────────────────
+    # v5 设为 true + initial_pose=(0,0,0) 会导致：
+    #   1. AMCL 启动瞬间强制把车定位到地图原点(0,0,0)
+    #   2. 用户实际把车移到了"中心偏后"位置（≠原点），位姿错位
+    #   3. 用户 RViz 点 2D Pose Estimate 校准，但 AMCL 已用错位的
+    #      初始姿态跑了几秒钟，期间 local costmap 把激光雷达观测到
+    #      的障碍物"投影"到了错误地图位置 → 障碍物在 costmap 中的
+    #      位置和真实物理位置错位
+    #   4. MPPI 按错位的 costmap 规划，避障算法判定"前方无障碍"，
+    #      实际却撞上真实障碍物
+    # v6 强制要求 RViz 2D Pose Estimate 校准后再发任务，避免错位。
+    # 启动后 AMCL 没有初始位姿前不会输出 map→odom TF，Nav2 会等待
+    # 用户在 RViz 校准，这是最稳的做法。
+    set_initial_pose: false
+    # 真实激光最大量程，与 pointcloud_to_laserscan.yaml 对齐
+    # （laser_max_range 默认是 -1.0 表示用 scan 自身的 range_max，已足够；
+    #  这里显式拉齐，避免雷达上报异常 inf 时 AMCL 误判）
+
+bt_navigator:
+  ros__parameters:
+    # ── ROS2 Humble 兼容版（单 navigator + plugin_lib_names）──
+    # 阿克曼底盘不能原地旋转 / 任意后退，所以无法使用 nav2 内置默认 BT
+    # （内置 BT 依赖 spin + back_up 两个 recovery action，加载时会要求
+    #  对应 action server 在 behavior_server 里被声明，否则直接 abort
+    #  bt_navigator 的 activation —— 这正是上一轮启动失败的根因）。
+    #
+    # 下面两个 *PLACEHOLDER* 字符串在 launch 阶段会被 nav2_common
+    # RewrittenYaml 替换为本包 install/share 下的绝对路径。
+    #   ⚠ 不要删这两行——RewrittenYaml 只"替换已存在的 key"，
+    #     如果 yaml 里没有这两个 key，它会沉默跳过，bt_navigator
+    #     就会回落到 /opt/ros/humble/.../navigate_to_pose_w_replanning_and_recovery.xml
+    #     从而再次试图加载需要 spin/back_up 的默认 BT 而失败。
+    default_nav_to_pose_bt_xml: __WILL_BE_REWRITTEN_BY_LAUNCH__
+    default_nav_through_poses_bt_xml: __WILL_BE_REWRITTEN_BY_LAUNCH__
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /odom
+    # ★ RK S100 算力有限，默认 bt_loop_duration=10ms（100Hz）跑不动
+    # 改成 50ms（20Hz）足够给 Nav2 用，CPU 占用下降明显，
+    # 同时消除 "Behavior Tree tick rate 100.00 was exceeded!" 警告
+    bt_loop_duration: 50
+    default_server_timeout: 20
+    wait_for_service_timeout: 1000
+    plugin_lib_names:
+      - nav2_compute_path_to_pose_action_bt_node
+      - nav2_compute_path_through_poses_action_bt_node
+      - nav2_smooth_path_action_bt_node
+      - nav2_follow_path_action_bt_node
+      - nav2_spin_action_bt_node
+      - nav2_wait_action_bt_node
+      - nav2_assisted_teleop_action_bt_node
+      - nav2_back_up_action_bt_node
+      - nav2_drive_on_heading_bt_node
+      - nav2_clear_costmap_service_bt_node
+      - nav2_is_stuck_condition_bt_node
+      - nav2_goal_reached_condition_bt_node
+      - nav2_goal_updated_condition_bt_node
+      - nav2_globally_updated_goal_condition_bt_node
+      - nav2_is_path_valid_condition_bt_node
+      - nav2_initial_pose_received_condition_bt_node
+      - nav2_reinitialize_global_localization_service_bt_node
+      - nav2_rate_controller_bt_node
+      - nav2_distance_controller_bt_node
+      - nav2_speed_controller_bt_node
+      - nav2_truncate_path_action_bt_node
+      - nav2_truncate_path_local_action_bt_node
+      - nav2_goal_updater_node_bt_node
+      - nav2_recovery_node_bt_node
+      - nav2_pipeline_sequence_bt_node
+      - nav2_round_robin_node_bt_node
+      - nav2_transform_available_condition_bt_node
+      - nav2_time_expired_condition_bt_node
+      - nav2_path_expiring_timer_condition
+      - nav2_distance_traveled_condition_bt_node
+      - nav2_single_trigger_bt_node
+      - nav2_goal_updated_controller_bt_node
+      - nav2_is_battery_low_condition_bt_node
+      - nav2_navigate_through_poses_action_bt_node
+      - nav2_navigate_to_pose_action_bt_node
+      - nav2_remove_passed_goals_action_bt_node
+      - nav2_planner_selector_bt_node
+      - nav2_controller_selector_bt_node
+      - nav2_goal_checker_selector_bt_node
+      - nav2_controller_cancel_bt_node
+      - nav2_path_longer_on_approach_bt_node
+      - nav2_wait_cancel_bt_node
+      - nav2_spin_cancel_bt_node
+      - nav2_back_up_cancel_bt_node
+      - nav2_assisted_teleop_cancel_bt_node
+      - nav2_drive_on_heading_cancel_bt_node
+      - nav2_is_battery_charging_condition_bt_node
+
+controller_server:
+  ros__parameters:
+    # ★ RK S100 CPU 满载时 MPPI 跑不到 20Hz，会出现 Control loop missed its
+    #   desired rate。降到 10Hz：阿克曼真车 0.35 m/s 巡航，10Hz 控制环
+    #   足够稳定，CPU 占用直接砍半。
+    controller_frequency: 10.0
+    costmap_update_timeout: 0.50
+    # 阿克曼：vy 必然 ≈ 0，把 vy 阈值拉高到 1.0 让 Nav2 不把 vy 当作有效速度
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 1.0
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    progress_checker_plugins: ["progress_checker"]
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+    use_realtime_priority: false
+    # ★ v6.2 显式声明：Nav2 controller_server 发布 geometry_msgs/Twist
+    # 而不是 TwistStamped。stm32_bridge 订阅的是 Twist，必须保持一致。
+    # Nav2 Jazzy/Rolling 默认 enable_stamped_cmd_vel=true，会导致
+    # stm32_bridge 永远收不到消息（rx=0/s, tx=0/s）。
+    # Nav2 Humble 默认 false，但显式声明保证升级兼容性。
+    enable_stamped_cmd_vel: false
+
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      # ★ v6 修复"撞墙后停一会又前冲"：
+      # v5 把 movement_time_allowance 拉到 30s，本意是"避免终点小振荡
+      # 触发 recovery"。但代价是：小车撞上障碍物 → STM32 堵转保护停车
+      # → progress_checker 长达 30s 不报失败，期间 controller 仍在发
+      # cmd_vel，STM32 看门狗一恢复就再次前冲。
+      # v6 把 movement_time_allowance 收回到 8s，配合 v6 启用的
+      # collision_monitor 兜底（接近障碍物会主动减速到 0），整体行为：
+      #   - 8s 内还没进展 → BT 进入 recovery → 清 costmap 重规划
+      #   - 而不是无脑再次冲向同一障碍
+      # required_movement_radius 保持 0.05 m（5 cm 算有进展），避免
+      # 低速场景的小振荡误判。
+      required_movement_radius: 0.05
+      movement_time_allowance: 8.0
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 阿克曼到点判定（v5：禁用 yaw 检查，根治"停下→倒车→摆动→突然前冲"）
+    # ─────────────────────────────────────────────────────────────────────
+    # v4 现象：到点 stop → 立刻倒退 → 摆动 → 突然前冲
+    #
+    # 根因：阿克曼无法原地旋转，但 yaw_goal_tolerance=0.50 (≈28°) 仍要求
+    #   终点朝向接近目标朝向。流程是：
+    #     1. xy 进入 20cm 容差 → goal_checker 看 yaw 偏差超 28° → 判未到达
+    #     2. MPPI 为纠正 yaw 必须开弧线 → ax_min=-1.5 让它瞬间倒车 → "倒退"
+    #     3. 倒一段 yaw 仍不够 → 再前进 → "来回摆动"
+    #     4. 最后 progress_checker 15s 无进展 → BT 清 costmap 重规划 → "突然前冲"
+    #
+    # v5 修复：阿克曼车的 2D Goal Pose **只判位置，不判朝向**
+    #   - yaw_goal_tolerance 设为 3.14（180°）等价禁用朝向检查
+    #   - 这样 xy 进入 0.20 m 容差就直接判定到达，不再纠正朝向
+    #   - 如果业务上确实需要朝向对准（如对接充电桩），用 docking_server
+    #     或单独的对接 action，不要用通用 Nav2 goal_checker
+    general_goal_checker:
+      stateful: True
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.20
+      yaw_goal_tolerance: 3.14    # 阿克曼禁用 yaw 检查（v5 关键修复）
+
+    FollowPath:
+      plugin: "nav2_mppi_controller::MPPIController"
+      # ★ RK S100 算力专用配置：
+      #   time_steps 56→30（前瞻 1.5s 仍足够）
+      #   batch_size 2000→1000（候选轨迹数减半，CPU 占用直接 -50%）
+      #   model_dt 0.05→0.10（与 controller_frequency=10Hz 对齐）
+      time_steps: 30
+      model_dt: 0.10
+      batch_size: 1000
+      # ── v5 加减速（仍保留 v4 的强减速策略）───────────────────────────
+      # 起步加速度 0.5（更柔和，避免顿挫），减速度仍 -1.2（够用即可）。
+      # v4 的 -1.5 过大，配合启动门槛会让小车在终点突然急刹后立刻反向，
+      # 这是 "停下→倒车" 的次要诱因。
+      ax_max: 0.5
+      ax_min: -1.2
+      ay_max: 0.0
+      ay_min: 0.0
+      az_max: 1.0
+      # ★ v8.1 回滚 v8.0 提速：vx_std 0.04 → 0.025（v7.2 保守值）
+      # ──────────────────────────────────────────────────────────
+      # 历史:
+      #   v6.5: vx_std=0.025  (低速精准, 配 vx_max=0.10)
+      #   v8.0: vx_std=0.04   (拉宽以覆盖 vx_max=0.20)
+      #   v8.1: vx_std=0.025  (回 v6.5/v7.2 值, 配 vx_max=0.10)
+      # 详见 vx_max 段对 v8.1 整体回滚的说明。
+      vx_std: 0.025
+      vy_std: 0.0
+      # ★ v11.0：wz_std 0.15 → 0.35（解决"只直走，不拐小角度"）
+      # ────────────────────────────────────────────────────────
+      # 现象：goal 与小车朝向夹角 5~15° 时，MPPI 始终直行越过目标，
+      #       progress_checker 报失败 → 全局重规划又把车拉回，反复振荡。
+      # 根因：vx_max=0.10 / wz_max=0.33 下，1° 朝向修正只需要
+      #       ω ≈ 0.02 rad/s。原 wz_std=0.15 看似覆盖范围够，但 critic
+      #       打分时"直行"和"微转向 0.02"的轨迹分差 < 1%，MPPI 收敛到
+      #       直行（v11 同步用 PathAngleCritic 提权打散这种平局）。
+      # 取 0.35：约等于 wz_max 全幅一个 σ，让 MPPI 在 ±0.02~0.05 rad/s
+      #       小角度修正区间也有足够采样密度。CPU 影响可忽略
+      #       （batch_size 不变，仅采样分布展宽）。
+      wz_std: 0.35
+      # ── v8.1 回滚真车巡航速度（v8.0 提速失败后的修正）───────────────
+      # 历史演进：
+      #   v3:    vx_max=0.30, wz_max=0.80
+      #   v6.5:  vx_max=0.10, wz_max=0.33  ("慢点准确")
+      #   v7.2:  vx_max=0.10, wz_max=0.33  (alpha_fast 0.15 折中)
+      #   v8.0:  vx_max=0.20, wz_max=0.80  (基于"odom 高估"错误假设的提速)
+      #   v8.1:  vx_max=0.10, wz_max=0.33  (回 v7.2 保守值)
+      #
+      # v8.0 失败回放：
+      #   v8.0 当时假设 stm32_bridge 启动补偿让 odom 高估, 于是把命令空间
+      #   抬到 [0.08, 0.20] 与门槛对齐。这一假设在 STM32 端 MAX_LINEAR_SPEED
+      #   = 0.60f (实际真值 ~1.18) 未标定时是错的:
+      #     - 真车在 PWM 33% 下跑 ~0.39 m/s, 命令 0.20 m/s → 真车 0.39 m/s
+      #     - 开环 odom 报 0.20 m/s, 真车跑 0.39 m/s
+      #     - 结果是 odom **低估** (0.20 vs 0.39 → 报告只占真值 51%), 跟 v8.0
+      #       的"odom 高估"叙述方向相反。
+      #
+      # 用户已修 ChassisParams.h MAX_LINEAR_SPEED 0.60 → 1.18 (按 47cm/1.2s
+      # 反推), 现在命令 0.20 m/s 真车也跑 ~0.20 m/s, odom 数值轴线一致。
+      # 但残余漂移仍在: 开环 odom 没有编码器反馈, 速度越快累积误差越快。
+      # 0.20 m/s 比 0.10 m/s 误差累积速率快 2x。
+      #
+      # v8.1 选择把速度降回 0.10 m/s 保守区间, 把 v8.0 引入的"提速噪声"
+      # 摘掉, 漂移残差从场景 4 (高速放大里程计误差) 切回场景 1
+      # (开环里程计的固有累积) 单一来源, 后续要根治需要走方案 Z
+      # (闭环编码器 odom, v7.0 失败方案重启), 不在 v8.1 范围内。
+      #
+      # ★ vx_min 保留 0.05 (回 v6.5 值, 配合 Ackermann motion model)
+      # MPPI 在 |wz| ≤ vx/min_turning_r 约束下, vx 接近 0 会让 wz 上限归零,
+      # 所有候选被压成直线。vx_min=0.05 配 min_turning_r=0.30 → wz 至少
+      # 0.05/0.30=0.17 rad/s, 仍有微调能力, 不会卡死。
+      vx_max: 0.10
+      vx_min: 0.05
+      vy_max: 0.0     # 禁止侧移
+      wz_max: 0.33    # r_min = 0.10/0.33 = 0.30 m, 与 min_turning_r 一致
+      iteration_count: 1
+      # 前瞻距离：vx_max=0.10 × time_steps=30 × model_dt=0.10 = 0.30 m
+      # prune_distance 给 0.6 m（2 倍前瞻），让 MPPI 有足够远期路径
+      # 来打分避障 critic；过短会导致到障碍物前才反应。
+      prune_distance: 0.6
+      transform_tolerance: 0.1
+      temperature: 0.3
+      gamma: 0.015
+      # ── 关键：阿克曼运动模型 ──
+      motion_model: "Ackermann"
+      visualize: true
+      regenerate_noises: true
+      TrajectoryVisualizer:
+        trajectory_step: 5
+        time_step: 3
+      AckermannConstraints:
+        # 理论 r_min = vx_max/wz_max = 0.10/0.33 = 0.30 m
+        # ★ v8.1: 0.25 → 0.30 (与 r_min 严格对齐, v8.0 提速回滚后同步)
+        # ────────────────────────────────────────────────────────
+        # 历史：
+        #   v11.0: 0.30 → 0.25 (放宽, 让 wz 不被截断)
+        #   v8.0:  0.25 保持   (配合 vx_max=0.20, wz_max=0.80, r=0.25)
+        #   v8.1:  0.25 → 0.30 (回 v7.2 配合 vx_max=0.10, wz_max=0.33)
+        # 物理意义: vx_max/wz_max = 0.10/0.33 = 0.30, 让 motion model
+        # 严格按 Ackermann 物理约束采样, 候选轨迹更贴近真车实际行为。
+        # 若诊断 B 显示 tx_cmd[1] 非零但车不转, 按
+        # "cmd_vel {vx:0.10, wz:0.33}" 画圆量直径, 实测最小转弯半径,
+        # 实测 > 0.6 m 时必须把此值改成实测值。
+        min_turning_r: 0.30
+      critics: [
+        "ConstraintCritic", "CostCritic", "GoalCritic",
+        "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic",
+        "PathAngleCritic", "PreferForwardCritic"]
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      # ★ v6.3 关键修复：压低 GoalCritic，避免它压过 CostCritic
+      # ────────────────────────────────────────────────────────
+      # 之前 cost_weight=20.0 > CostCritic=18.0，threshold=2.5m 大半个测试场地，
+      # 导致 MPPI 候选轨迹评分中"奔向目标"的奖励 > "避开障碍"的惩罚，
+      # 车径直撞向障碍物。v6.3 把 GoalCritic 调低到 8.0、激活距离压到 1.0 m：
+      #   - 远离目标时（>1m）GoalCritic 完全关闭，路径跟随和避障主导
+      #   - 进入 1m 后再启用 GoalCritic 帮助末端收敛
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 8.0
+        threshold_to_consider: 1.0
+      # ★ v5 关键：完全禁用 GoalAngleCritic
+      #   阿克曼不能原地旋转，强行让 MPPI 在终点纠正朝向 →
+      #   产生倒车 + 弧线 + 摆动。彻底关掉，朝向交给业务层处理。
+      GoalAngleCritic:
+        enabled: false
+        cost_power: 1
+        cost_weight: 0.0
+        threshold_to_consider: 0.5
+      # ★ v6.3：PreferForwardCritic 权重再降到 2.0
+      #   v5 设 5.0 时为了"保持前进感"，但实测它会和 CostCritic 形成
+      #   推-拉对抗：CostCritic 想绕开障碍，PreferForwardCritic 想直行 →
+      #   合力依然朝前 → 撞。v6.3 把它降到 2.0，让避障/路径跟随主导，
+      #   PreferForwardCritic 只在已经接近正确朝向时给微弱正反馈，
+      #   避免成为避障的对手。
+      PreferForwardCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        threshold_to_consider: 0.5
+      # ★ v6.3 关键修复：CostCritic 全面加强（这是车冲向障碍物的真凶）
+      # ────────────────────────────────────────────────────────────────
+      # v6.2 实测：链路通了、costmap 里能看见蓝紫色膨胀，但车依然径直撞向
+      # 障碍物。深入 nav2_mppi_controller/src/critics/cost_critic.cpp 的
+      # 评分逻辑后定位出三层问题，v6.3 一次修齐：
+      #
+      # 【问题 1】near_goal_distance: 1.0 ← 这是最致命的一条
+      #   MPPI 的 CostCritic::score() 末尾有一段：
+      #     if (near_goal_distance_ > 0.0 &&
+      #         utils::withinPositionDistance(data.path, last_pose, near_goal_distance_))
+      #         return;  // 静默跳过避障评分！
+      #   含义：候选轨迹末端到全局路径末端的距离 < 1.0 m 时，
+      #   CostCritic 直接 return，**整条轨迹的避障代价不计入评分**。
+      #   而用户的测试场景就是"在障碍物前 1~2 m 处打 Goal Pose"，
+      #   此时几乎所有候选轨迹的末端都落在这个 1.0 m 窗口里
+      #   → CostCritic 形同虚设 → MPPI 只看 GoalCritic+PathAlign+PreferForward
+      #   → 三者合力直接指向障碍物背后的目标点 → 撞。
+      #   v6.3 改 0.2 m：只在最后 20 cm 关闭避障（用于精准到点），
+      #   其余距离全程启用 CostCritic。
+      #
+      # 【问题 2】critical_cost: 220.0 ← 报警太迟
+      #   InflationLayer 的代价随距离指数衰减（cost_scaling_factor=2.0）：
+      #     距障碍中心 0.15 m（inscribed）→ cost 253
+      #     0.20 m → ~228
+      #     0.25 m → ~206
+      #     0.30 m → ~186
+      #     0.40 m → ~153
+      #     0.60 m → ~83
+      #   critical_cost=220 对应车体中心距障碍 ~0.21 m（车边缘只剩 6 cm 余量），
+      #   到这里才"判为关键"已经来不及刹车。
+      #   v6.3 改 120：对应车体中心距障碍 ~0.45 m（车边缘 30 cm 余量），
+      #   配合 0.10 m/s 巡航 + 1.2 m/s² 减速（停车距离 < 1 cm）绰绰有余。
+      #
+      # 【问题 3】trajectory_point_step: 2 ← 候选轨迹漏检 50% 的点
+      #   MPPI 在每条候选轨迹上每 step=2 个点采样一次代价。轨迹 30 个点
+      #   只查 15 个，中间穿过障碍物的细窄轨迹有 50% 概率漏检。
+      #   v6.3 改 1：每个点都查，CPU 增量小（RK S100 完全扛得住）。
+      #
+      # 【副作用控制】consider_footprint 仍保持 false（保 robot_radius 用法
+      # 不变，不需要重写 footprint 多边形）。
+      CostCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 32.0          # 18.0 → 32.0，确保 CostCritic 主导评分
+        near_collision_cost: 253
+        critical_cost: 120.0       # 220.0 → 120.0，提前 30cm 触发减速 ★
+        consider_footprint: false
+        collision_cost: 1000000.0
+        near_goal_distance: 0.2    # 1.0 → 0.2 ★★★ 这是车冲向障碍物的真凶
+        trajectory_point_step: 1   # 2 → 1，每点都查，杜绝漏检
+      # ★ v6.3：PathAlignCritic 权重适度下调，给 CostCritic 让路
+      #   原 14.0 让小车"硬贴路径"，全局规划如果离障碍物只有
+      #   inflation_radius=0.40m 的余量，PathAlign 会强行把车
+      #   按在路径上即使两侧 cost 已经偏高。降到 8.0 让 CostCritic
+      #   可以在必要时把车从路径上"推开"几十厘米去绕障。
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 8.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 4
+        threshold_to_consider: 0.5
+        offset_from_furthest: 20
+        use_path_orientations: true   # 阿克曼优先沿路径切线方向
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        offset_from_furthest: 5
+        threshold_to_consider: 1.4
+      # ★ v11.0：PathAngleCritic 提权 + 早触发（解决"只直走，不拐小角度"）
+      # ────────────────────────────────────────────────────────────
+      # 与 wz_std 提到 0.35 配合使用：仅展宽采样还不够，还得让 critic
+      # 评分系统对"小角度跟向"给足惩罚梯度。
+      #
+      #   cost_weight: 2.0 → 8.0
+      #     原值 2.0 几乎是其它 critic 的 1/4，朝向偏差对总分影响微弱。
+      #     提到 8.0 与 PathAlignCritic 同级，让"航向不对齐路径"
+      #     成为可与避障并列考虑的代价项。
+      #
+      #   max_angle_to_furthest: 1.0 → 0.6 rad（57° → 34°）
+      #     原 1.0 rad（57°）才开始施加角度惩罚，5~15° 这种小角度修正
+      #     不被该 critic 监管 → MPPI 当作平局 → 直行胜出。改 0.6 rad
+      #     让 30° 内的偏差也进入评分。
+      #
+      #   offset_from_furthest: 4 → 2（评估点更靠当前位置）
+      #     之前看 4 个轨迹点之后的姿态偏差，太远；改 2 让 critic 在
+      #     轨迹早期就约束朝向，与 wz_std 提宽配合加速收敛。
+      #
+      # 三项一起调整后，对 30° 以内的小偏航 critic 输出明显非零代价；
+      # MPPI 自然会发出 ±0.02~0.05 rad/s 的微调命令。
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 8.0
+        offset_from_furthest: 2
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 0.6
+        mode: 0
+
+# ============================================================================
+# 代价地图（重点修复 "Starting point in lethal space"）
+# ----------------------------------------------------------------------------
+# 根因：之前 inflation_radius=0.25 + robot_radius=0.18 = 总占用 0.43 m。
+#   真车 RViz "2D Pose Estimate" 稍微靠墙一点，AMCL 收敛后的车体坐标
+#   就直接落在 INSCRIBED 致命区，Smac 把起点判为障碍，全局规划失败、
+#   BT abort，没有任何 cmd_vel 下发 → 小车一动不动。
+#
+# 修复策略：
+#   1. robot_radius 0.18 → 0.15（与底盘实际半宽更贴合）
+#   2. inflation_radius 0.25 → 0.18（仅比车体半径多 3cm 安全边距）
+#   3. cost_scaling_factor 5.0 → 3.0（让代价从致命到 0 衰减更缓，
+#      INSCRIBED 区域不会拓得过宽）
+#   4. local_costmap 关 voxel_layer 立体计算，改用 ObstacleLayer 2D 版，
+#      RK S100 CPU 占用直接砍半。Mid360 在 pc2laserscan 阶段已压成 2D，
+#      再用 voxel 三维栅格化纯属浪费算力。
+# ============================================================================
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      # ★ RK 板算力专项：local costmap 也减负
+      #   update_frequency 5→3（已足够 0.35 m/s 低速车）
+      #   width/height 3→2（地图面积 -56%，inflation 计算量同比减少）
+      update_frequency: 3.0
+      publish_frequency: 1.0
+      global_frame: odom
+      robot_base_frame: base_link
+      rolling_window: true
+      width: 2
+      height: 2
+      resolution: 0.05
+      # ── 阿克曼小车 footprint（如已知车体尺寸建议改为多边形）──
+      # 当前用 robot_radius 兜底；如要更精细，把下面行替换为：
+      # footprint: "[[0.18,0.10],[0.18,-0.10],[-0.12,-0.10],[-0.12,0.10]]"
+      robot_radius: 0.15
+      # ★ 用 obstacle_layer（2D）替换 voxel_layer（3D），RK 板 CPU 减半
+      plugins: ["obstacle_layer", "inflation_layer"]
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        # ★ v6 关键：把 inflation_radius 从 0.18 → 0.40 (扩 22 cm)
+        # 旧值 0.18 = robot_radius(0.15) + 3 cm 缓冲，缓冲带只有 3 cm，
+        # MPPI 控制循环 10 Hz + 巡航 0.15 m/s 下，物理刹停距离最多
+        # 12 cm（0.15² / (2*1.0) + 0.1s 控制延迟），3 cm 缓冲完全不够，
+        # 这是"撞向障碍物"的直接物理原因。
+        # 新值 0.40 = robot_radius(0.15) + 25 cm 安全缓冲，
+        # 配合 CostCritic 加大权重，足以在撞前 25 cm 触发减速。
+        # cost_scaling_factor 同步降到 2.0，让代价从致命到 0 衰减更
+        # 平缓，避免 inflation 过宽造成狭窄通道规划困难。
+        cost_scaling_factor: 2.0
+        inflation_radius: 0.40
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        # ★ 创新点：新增 dynamic_person 数据源
+        # 由 dynamic_person_obstacle_node（vlm 侧）发布，把 YOLO 检测到的
+        # 行人 bbox 反投影为 3D 点云注入 Nav2，让全局/局部代价地图立即认为
+        # "前方那块位置不可通行"，从而触发 Nav2 重新规划绕开。
+        # 与 /scan_filtered 并列而不是替换：lidar 保底、camera 加成。
+        observation_sources: scan dynamic_person
+        scan:
+          # 与 czybot_slam 滤波链对齐，使用 /scan_filtered
+          topic: /scan_filtered
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 2.5
+          obstacle_min_range: 0.0
+        dynamic_person:
+          topic: /dynamic_person_points
+          # 行人身高上限（米），高于此值的点会被丢弃
+          max_obstacle_height: 2.0
+          # marking=True 才会写入 costmap；clearing=True 允许人离开后清除
+          clearing: True
+          marking: True
+          data_type: "PointCloud2"
+          # 3m 之外的行人不放进 local_costmap（超出感知可靠范围）
+          obstacle_max_range: 3.0
+          obstacle_min_range: 0.0
+          raytrace_max_range: 3.5
+          raytrace_min_range: 0.0
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
+      always_send_full_costmap: True
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_link
+      robot_radius: 0.15
+      resolution: 0.05
+      track_unknown_space: true
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        # ★ 创新点：与 local_costmap 保持一致，全局层同样接收 /dynamic_person_points
+        # 这样 planner_server (SmacPlanner2D) 也能看到行人，从而在全局路径
+        # 层面直接绕开，而不是等到 local controller 再急刹。
+        observation_sources: scan dynamic_person
+        scan:
+          topic: /scan_filtered
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 2.5
+          obstacle_min_range: 0.0
+        dynamic_person:
+          topic: /dynamic_person_points
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "PointCloud2"
+          obstacle_max_range: 3.0
+          obstacle_min_range: 0.0
+          raytrace_max_range: 3.5
+          raytrace_min_range: 0.0
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        # ★ v6 与 local_costmap 同步加大安全边距，让 SmacPlanner2D
+        # 全局规划阶段就避开障碍物 25 cm，而不是依赖 local costmap
+        # 临时绕行。两层 costmap 完全对齐避免 "global 通行 / local
+        # 致命" 的不一致。
+        cost_scaling_factor: 2.0
+        inflation_radius: 0.40
+      always_send_full_costmap: True
+
+map_server:
+  ros__parameters:
+    yaml_filename: ""
+
+map_saver:
+  ros__parameters:
+    save_map_timeout: 5.0
+    free_thresh_default: 0.25
+    occupied_thresh_default: 0.65
+    map_subscribe_transient_local: True
+
+planner_server:
+  ros__parameters:
+    # ★ 关键：之前写 20.0 完全不切实际——SmacPlanner2D 在 RK 板上做一次
+    #   完整搜索就要 0.5~1s，根本不可能 20Hz。这导致一直刷
+    #   "Planner loop missed its desired rate of 20Hz, current 1.92Hz"。
+    #   实际 1Hz 已经足够：BT 里 RateController hz=1.0 也是这个频率。
+    expected_planner_frequency: 1.0
+    planner_plugins: ["GridBased"]
+    costmap_update_timeout: 1.0
+    # ── 阿克曼小车工程化方案 ──────────────────────────────────────────
+    # 全局规划用 SmacPlanner2D（无运动学约束），阿克曼运动学完全交给
+    # 下游 MPPI Ackermann 控制器处理。
+    #
+    # 历史教训：之前用 SmacPlannerHybrid(DUBIN) + r_min=0.45m 时，
+    # 0.6 m 量级的近距离目标会反复 "no valid path found"——
+    # Hybrid-A* 必须能用 r_min 的弧线连起点和终点，距离过短直接无解。
+    GridBased:
+      plugin: "nav2_smac_planner/SmacPlanner2D"
+      tolerance: 0.30
+      downsample_costmap: false
+      downsampling_factor: 1
+      allow_unknown: true
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 2.0
+      motion_model_for_search: "MOORE"   # 8-邻接，2D 平面 A*
+      cost_travel_multiplier: 2.0
+      use_final_approach_orientation: false
+      smooth_path: true
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
+
+smoother_server:
+  ros__parameters:
+    smoother_plugins: ["simple_smoother"]
+    simple_smoother:
+      plugin: "nav2_smoother::SimpleSmoother"
+      tolerance: 1.0e-10
+      max_its: 1000
+      do_refinement: True
+
+# ── 阿克曼禁止 spin / backup（无法原地旋转，后退依赖舵机限制）──
+behavior_server:
+  ros__parameters:
+    local_costmap_topic: local_costmap/costmap_raw
+    global_costmap_topic: global_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
+    global_footprint_topic: global_costmap/published_footprint
+    cycle_frequency: 10.0
+    # 仅保留 drive_on_heading / wait / assisted_teleop（阿克曼安全恢复）
+    behavior_plugins: ["drive_on_heading", "wait", "assisted_teleop"]
+    drive_on_heading:
+      plugin: "nav2_behaviors/DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors/Wait"
+    assisted_teleop:
+      plugin: "nav2_behaviors/AssistedTeleop"
+    local_frame: odom
+    global_frame: map
+    robot_base_frame: base_link
+    transform_tolerance: 0.1
+    simulate_ahead_time: 2.0
+    # 仅在 drive_on_heading 内部仿真用，不会真正发出原地旋转
+    max_rotational_vel: 0.6
+    min_rotational_vel: 0.2
+    rotational_acc_lim: 1.5
+
+waypoint_follower:
+  ros__parameters:
+    loop_rate: 20
+    stop_on_failure: false
+    action_server_result_timeout: 900.0
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: True
+      waypoint_pause_duration: 200
+
+route_server:
+  ros__parameters:
+    boundary_radius_to_achieve_node: 1.0
+    radius_to_achieve_node: 2.0
+    smooth_corners: true
+    operations: ["AdjustSpeedLimit", "ReroutingService", "CollisionMonitor"]
+    ReroutingService:
+      plugin: "nav2_route::ReroutingService"
+    AdjustSpeedLimit:
+      plugin: "nav2_route::AdjustSpeedLimit"
+    CollisionMonitor:
+      plugin: "nav2_route::CollisionMonitor"
+      max_collision_dist: 3.0
+    edge_cost_functions: ["DistanceScorer", "CostmapScorer"]
+    DistanceScorer:
+      plugin: "nav2_route::DistanceScorer"
+    CostmapScorer:
+      plugin: "nav2_route::CostmapScorer"
+
+# ── 速度平滑 ──
+# 注意：Nav2 默认 controller_server 直接发到 /cmd_vel，stm32_bridge 也订阅
+# /cmd_vel，velocity_smoother 默认订阅 cmd_vel 重新发布到 /cmd_vel_smoothed，
+# 当前链路下它实际是旁路的。若以后想启用平滑链：
+#   1. controller_server 改发 /cmd_vel_nav（remap）
+#   2. velocity_smoother 订阅 /cmd_vel_nav，发布 /cmd_vel
+#   3. 或者把 stm32_bridge 改订 /cmd_vel_smoothed
+# 此处参数与 MPPI 上限同步缩小，作为兜底/未来启用时的安全约束。
+velocity_smoother:
+  ros__parameters:
+    smoothing_frequency: 20.0
+    scale_velocities: False
+    feedback: "OPEN_LOOP"
+    # [vx, vy, wz] —— 与 MPPI 的 vx_max/wz_max 对齐（v8.1 回滚 v7.2 保守值）
+    max_velocity: [0.10, 0.0, 0.33]
+    # min_velocity 线速度设为 0，强制禁止倒车（MPPI vx_min=0.05 已禁止倒车）
+    min_velocity: [0.0, 0.0, -0.33]
+    # v5：加减速更柔和，避免终点附近的急刹反向
+    max_accel: [0.5, 0.0, 1.0]
+    max_decel: [-1.2, 0.0, -1.0]
+    odom_topic: "odom"
+    odom_duration: 0.1
+    # 与上位机 ROBOT_LINEAR_DEADBAND/ANGULAR_DEADBAND 一致
+    deadband_velocity: [0.005, 0.0, 0.010]
+    velocity_timeout: 1.0
+
+# ── 碰撞监控（v6.2：保留参数但实际处于旁路状态）──
+# ────────────────────────────────────────────────────────────────
+# 重要事实：nav2_bringup 的默认 launch 不会启动 nav2_collision_monitor
+# 节点，也不会把它加进 lifecycle_manager 的 node_names 列表。
+# 因此本 yaml 里的 collision_monitor 配置实际**不会被任何节点读取**，
+# 留在这里只是为将来想真正启用避障兜底时的参考。
+#
+# 当前（v6.2）速度链路：
+#   controller_server → /cmd_vel → stm32_bridge → STM32
+# MPPI 自身的避障由 CostCritic 保证：
+#   cost_weight=18.0 + critical_cost=220.0 + inflation_radius=0.40
+#
+# 如果将来要真正启用 collision_monitor，需要在 launch 里：
+#   1. 添加 Node(package='nav2_collision_monitor',
+#               executable='collision_monitor', ...)
+#   2. 把 'collision_monitor' 加进 lifecycle_manager_navigation
+#      的 node_names 列表（在 nav2_bringup 的 navigation_launch.py 里）
+#   3. 把 stm32_bridge 的 remap 改回 ('cmd_vel','cmd_vel_safe')
+#   4. 把 cmd_vel_out_topic 改回 cmd_vel_safe
+# 三步缺一不可，否则会出现：
+#   - 缺 step 1/2：/cmd_vel_safe 没人发，bridge 收不到命令（v6 故障）
+#   - 缺 step 3：collision_monitor 输出无人订阅
+#   - 缺 step 4：collision_monitor 覆盖 controller 的 cmd_vel 形成回环
+collision_monitor:
+  ros__parameters:
+    base_frame_id: "base_link"
+    odom_frame_id: "odom"
+    # 注意：这两个 topic 名只在 collision_monitor 节点被启动并激活时才有效
+    cmd_vel_in_topic: "cmd_vel"
+    cmd_vel_out_topic: "cmd_vel_safe"
+    state_topic: "collision_monitor_state"
+    transform_tolerance: 0.2
+    source_timeout: 1.0
+    base_shift_correction: True
+    stop_pub_timeout: 2.0
+    polygons: ["FootprintApproach"]
+    FootprintApproach:
+      type: "polygon"
+      action_type: "approach"
+      footprint_topic: "/local_costmap/published_footprint"
+      time_before_collision: 1.5
+      simulation_time_step: 0.1
+      min_points: 4
+      visualize: True
+      enabled: True
+    observation_sources: ["scan"]
+    scan:
+      type: "scan"
+      topic: "scan_filtered"
+      min_height: 0.15
+      max_height: 2.0
+      enabled: True
+
+docking_server:
+  ros__parameters:
+    controller_frequency: 50.0
+    initial_perception_timeout: 5.0
+    wait_charge_timeout: 5.0
+    dock_approach_timeout: 30.0
+    undock_linear_tolerance: 0.05
+    undock_angular_tolerance: 0.1
+    max_retries: 3
+    base_frame: "base_link"
+    fixed_frame: "odom"
+    dock_backwards: false
+    dock_prestaging_tolerance: 0.5
+    dock_plugins: ['simple_charging_dock']
+    simple_charging_dock:
+      plugin: 'opennav_docking::SimpleChargingDock'
+      docking_threshold: 0.05
+      staging_x_offset: -0.7
+      use_external_detection_pose: true
+      use_battery_status: false
+      use_stall_detection: false
+      external_detection_timeout: 1.0
+      external_detection_translation_x: -0.18
+      external_detection_translation_y: 0.0
+      external_detection_rotation_roll: -1.57
+      external_detection_rotation_pitch: -1.57
+      external_detection_rotation_yaw: 0.0
+      filter_coef: 0.1
+    controller:
+      k_phi: 3.0
+      k_delta: 2.0
+      v_linear_min: 0.15
+      v_linear_max: 0.15
+      use_collision_detection: true
+      costmap_topic: "local_costmap/costmap_raw"
+      footprint_topic: "local_costmap/published_footprint"
+      transform_tolerance: 0.1
+      projection_time: 5.0
+      simulation_step: 0.1
+      dock_collision_threshold: 0.3
+
+loopback_simulator:
+  ros__parameters:
+    base_frame_id: "base_link"
+    odom_frame_id: "odom"
+    map_frame_id: "map"
+    scan_frame_id: "base_scan"
+    update_duration: 0.02
+    scan_range_min: 0.05
+    scan_range_max: 30.0
+    scan_angle_min: -3.1415
+    scan_angle_max: 3.1415
+    scan_angle_increment: 0.02617
+    scan_use_inf: true

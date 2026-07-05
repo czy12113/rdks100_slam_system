@@ -1,0 +1,164 @@
+/* =============================================================================
+   全局样式 - 深色科技风
+   ============================================================================= */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --color-primary: #00d4ff;
+  --color-success: #00ff88;
+  --color-warning: #ffaa00;
+  --color-danger: #ff4444;
+  --color-info: #8888ff;
+  --color-bg: #0a0e1a;
+  --color-bg-card: #0d1526;
+  --color-bg-panel: #111827;
+  --color-border: #1e3a5f;
+  --color-text: #e0e6f0;
+  --color-text-muted: #6b7a99;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  --font-sans: 'Inter', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --shadow: 0 4px 24px rgba(0, 212, 255, 0.08);
+  --shadow-hover: 0 8px 32px rgba(0, 212, 255, 0.18);
+  --transition: 0.2s ease;
+}
+
+html, body {
+  height: 100%;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+#app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--color-bg); }
+::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-primary); }
+
+/* 通用卡片 */
+.tech-card {
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  box-shadow: var(--shadow);
+  transition: box-shadow var(--transition);
+  &:hover { box-shadow: var(--shadow-hover); }
+}
+
+/* 标题栏 */
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--color-border);
+
+  .card-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--color-primary);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+}
+
+/* 状态指示点 */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  &.online  { background: var(--color-success); box-shadow: 0 0 6px var(--color-success); }
+  &.offline { background: var(--color-danger); }
+  &.warn    { background: var(--color-warning); box-shadow: 0 0 6px var(--color-warning); }
+  &.pulse {
+    animation: pulse 1.5s infinite;
+  }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.5; transform: scale(0.8); }
+}
+
+/* 数值显示 */
+.metric-value {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--color-primary);
+  line-height: 1;
+}
+
+.metric-unit {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin-left: 4px;
+}
+
+/* 进度条 */
+.tech-progress {
+  height: 4px;
+  background: var(--color-border);
+  border-radius: 2px;
+  overflow: hidden;
+  .bar {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.4s ease;
+    background: linear-gradient(90deg, var(--color-primary), #0088ff);
+    &.warn    { background: linear-gradient(90deg, var(--color-warning), #ff6600); }
+    &.danger  { background: linear-gradient(90deg, var(--color-danger), #cc0000); }
+  }
+}
+
+/* Element Plus 深色主题覆盖 */
+.el-button--primary {
+  --el-button-bg-color: transparent;
+  --el-button-border-color: var(--color-primary);
+  --el-button-text-color: var(--color-primary);
+  --el-button-hover-bg-color: rgba(0, 212, 255, 0.1);
+  --el-button-hover-border-color: var(--color-primary);
+  --el-button-active-bg-color: rgba(0, 212, 255, 0.2);
+}
+
+.el-button--danger {
+  --el-button-bg-color: transparent;
+  --el-button-border-color: var(--color-danger);
+  --el-button-text-color: var(--color-danger);
+  --el-button-hover-bg-color: rgba(255, 68, 68, 0.1);
+}
+
+/* 日志颜色 */
+.log-info  { color: var(--color-text); }
+.log-warn  { color: var(--color-warning); }
+.log-error { color: var(--color-danger); }
+.log-debug { color: var(--color-text-muted); }
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .metric-value { font-size: 18px; }
+  .tech-card { padding: 12px; }
+}

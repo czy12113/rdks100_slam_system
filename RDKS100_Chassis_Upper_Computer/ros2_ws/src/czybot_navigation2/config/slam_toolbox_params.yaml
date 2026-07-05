@@ -1,0 +1,70 @@
+# SLAM Toolbox 优化配置 - 减少地图重影
+# 针对里程计漂移问题的优化参数
+
+slam_toolbox:
+  ros__parameters:
+    # 基础参数
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_link
+    scan_topic: /scan
+    use_map_saver: true
+    mode: mapping
+    
+    # 调试选项
+    debug_logging: false
+    throttle_scans: 2
+    transform_publish_period: 0.02  # 50Hz
+    map_update_interval: 1.5  # 适度更新频率，降低CPU负载
+    resolution: 0.05  # 5cm分辨率
+    max_laser_range: 12.0
+    minimum_time_interval: 0.15  # 增加时间间隔，降低处理频率
+    transform_timeout: 5.0  # 增加超时时间，容忍STM32启动延迟
+    tf_buffer_duration: 30.0
+    stack_size_to_use: 40000000
+    enable_interactive_mode: true
+    
+    # 消息过滤器配置（关键：解决队列溢出）
+    message_filter_queue_size: 50  # 增加消息队列大小
+    message_filter_timeout: 5.0  # 增加消息过滤器超时
+    
+    # 关键优化：更严格的建图条件（减少漂移累积）
+    minimum_travel_distance: 0.15  # 从0.05增加到0.15米，减少频繁更新
+    minimum_travel_heading: 0.15  # 从0.05增加到0.15弧度
+    scan_buffer_size: 10  # 降低缓冲大小，适应RDK S100性能
+    scan_buffer_maximum_scan_distance: 10.0
+    
+    # 扫描订阅队列大小
+    scan_queue_size: 50  # 增加队列大小，容忍启动延迟和TF延迟
+    
+    # 扫描匹配优化（更严格的匹配要求）
+    link_match_minimum_response_fine: 0.3  # 从0.1提高到0.3，要求更高匹配度
+    link_scan_maximum_distance: 1.0  # 从1.5降低到1.0，更保守的匹配
+    
+    # 回环检测优化（关键：修正累积误差）
+    do_loop_closing: true  # 必须启用
+    loop_search_maximum_distance: 5.0  # 从3.0增加到5.0，更大范围搜索
+    loop_match_minimum_chain_size: 15  # 从10增加到15，更可靠的回环
+    loop_match_maximum_variance_coarse: 2.0  # 从3.0降低到2.0，更严格
+    loop_match_minimum_response_coarse: 0.45  # 从0.35提高到0.45
+    loop_match_minimum_response_fine: 0.55  # 从0.45提高到0.55
+    
+    # 相关性搜索参数（平衡精度和性能）
+    correlation_search_space_dimension: 0.8  # 从1.0降低到0.8
+    correlation_search_space_resolution: 0.01  # 保持适中精度，降低计算量
+    correlation_search_space_smear_deviation: 0.05  # 从0.1降低到0.05
+    
+    # 回环搜索空间
+    loop_search_space_dimension: 8.0
+    loop_search_space_resolution: 0.05
+    loop_search_space_smear_deviation: 0.03
+    
+    # 扫描匹配惩罚（增加对不确定性的惩罚）
+    distance_variance_penalty: 0.8  # 从0.5增加到0.8
+    angle_variance_penalty: 1.5  # 从1.0增加到1.5
+    fine_search_angle_offset: 0.00349
+    coarse_search_angle_offset: 0.349
+    coarse_angle_resolution: 0.0349
+    minimum_angle_penalty: 0.9
+    minimum_distance_penalty: 0.5
+    use_response_expansion: true

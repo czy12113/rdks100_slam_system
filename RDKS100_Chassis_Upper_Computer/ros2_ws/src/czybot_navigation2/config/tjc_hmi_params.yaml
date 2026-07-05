@@ -1,0 +1,21 @@
+/**:
+  ros__parameters:
+    # 串口配置
+    port: '/dev/ttyUSB1'  # TJC串口屏端口（STM32是ttyUSB0）
+    baudrate: 115200      # 波特率115200
+    
+    # 更新频率
+    update_rate: 10.0     # 屏幕更新频率 (Hz)
+    
+    # 速度限制（参考ackermann_teleop_key优化后的参数）
+    max_linear_vel: 0.8   # 最大线速度 (m/s)
+    max_angular_vel: 1.2  # 最大角速度 (rad/s)
+    
+    # 递增控制参数
+    linear_step: 0.1      # 线速度递增步长 (m/s)
+    angular_step: 0.15    # 角速度递增步长 (rad/s)
+    
+    # 死区参数（过滤微小速度）
+    linear_deadzone: 0.02   # 线速度死区 (m/s)
+    angular_deadzone: 0.05  # 角速度死区 (rad/s)
+

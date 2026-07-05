@@ -1,0 +1,35 @@
+{
+  "name": "rdks100-webui",
+  "version": "1.0.0",
+  "description": "RDK S100 智能机器人上位机系统前端",
+  "private": true,
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 5173",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 4173",
+    "lint": "eslint . --ext .vue,.ts,.tsx --fix"
+  },
+  "dependencies": {
+    "vue": "3.4.21",
+    "vue-router": "4.3.2",
+    "pinia": "2.1.7",
+    "element-plus": "2.7.2",
+    "@element-plus/icons-vue": "2.3.1",
+    "echarts": "5.5.0",
+    "three": "0.164.1",
+    "axios": "1.6.8",
+    "dayjs": "1.11.10",
+    "nipplejs": "0.10.1"
+  },
+  "devDependencies": {
+    "@types/node": "20.12.7",
+    "@types/three": "0.164.0",
+    "@vitejs/plugin-vue": "5.0.4",
+    "typescript": "5.4.5",
+    "vite": "5.2.10",
+    "vue-tsc": "2.0.13",
+    "sass": "1.75.0",
+    "unplugin-auto-import": "0.17.5",
+    "unplugin-vue-components": "0.27.0"
+  }
+}

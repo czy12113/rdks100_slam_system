@@ -1,0 +1,10 @@
+Obj/
+Listings/
+DebugConfig/
+*.dep
+*.bak
+*.uvgui*
+*.uvguix*
+*.saved_uv4
+*.log
+*:Zone.Identifier

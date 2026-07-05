@@ -1,0 +1,52 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>czybot_slam</name>
+  <version>0.1.0</version>
+  <description>
+    Cartographer SLAM建图功能包 - 适配RDK S100 + Livox Mid-360S激光雷达
+    支持2D建图（pointcloud_to_laserscan + Cartographer/slam_toolbox）
+    和3D建图（Cartographer 3D纯点云模式）
+  </description>
+  <maintainer email="kkk@todo.todo">kkk</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- ROS2 核心 -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+
+  <!-- 雷达驱动 -->
+  <exec_depend>livox_ros_driver2</exec_depend>
+
+  <!-- 点云→激光扫描转换（2D模式） -->
+  <exec_depend>pointcloud_to_laserscan</exec_depend>
+
+  <!-- SLAM -->
+  <exec_depend>cartographer_ros</exec_depend>
+  <exec_depend>slam_toolbox</exec_depend>
+
+  <!-- 地图保存 -->
+  <exec_depend>nav2_map_server</exec_depend>
+
+  <!-- TF -->
+  <exec_depend>tf2_ros</exec_depend>
+
+  <!-- 可视化 -->
+  <exec_depend>rviz2</exec_depend>
+
+  <!-- Launch -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>vlm_scene</name>
+  <version>0.1.0</version>
+  <description>
+    VLM 场景理解 ROS2 节点。
+    订阅 DOSOD / YOLO 检测结果与 RGB 关键帧，按触发策略调用 VLM
+    （默认通义千问 qwen-vl-plus，可切换 deepseek_text / openai_vision /
+    internvl_local / mock），生成自然语言场景描述并发布到
+    /vlm/scene_description（std_msgs/String, JSON）。
+  </description>
+  <maintainer email="kkk@todo.todo">kkk</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <!-- 第三方 Python：opencv-python, numpy, requests（外部 VLM API）-->
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

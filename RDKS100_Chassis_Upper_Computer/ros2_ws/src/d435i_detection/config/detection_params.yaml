@@ -1,0 +1,83 @@
+# =============================================================================
+# D435i 检测节点配置（detection_node.py v2）
+# =============================================================================
+# 修改说明：
+#   - 直接编辑本文件，重启节点即可生效
+#   - 也可在 launch 文件内联 params 覆盖（launch 优先级更高）
+#   - 命令行覆盖示例：
+#       ros2 run d435i_detection detection_node \
+#         --ros-args -p confidence_threshold:=0.4 -p target_classes:=[0,2]
+# =============================================================================
+
+/**:
+  ros__parameters:
+
+    # ── 模型 ──────────────────────────────────────────────────────────────────
+    # YOLOv5 权重文件路径。
+    # 更换更大模型（精度↑速度↓）：yolov5m.pt / yolov5l.pt / yolov5x.pt
+    # 替换自训练模型：把路径改为 .pt 文件的绝对路径即可
+    model_path: "/home/sunrise/rdks100_slam/d435i_ros2/d435i_ros2/weights/yolov5s.pt"
+
+    # 推理设备：cpu（RDK S100 验证阶段）/ cuda（有 GPU 时）/ bpu（地平线 BPU，需转 .bin）
+    device: "cpu"
+
+    # ── 检测阈值 ──────────────────────────────────────────────────────────────
+    # 置信度阈值（0~1）。
+    # 越高 → 框越少、误检少、漏检多；越低 → 框越多、漏检少、误检多
+    # 推荐范围：0.4 ~ 0.6
+    confidence_threshold: 0.5
+
+    # NMS IoU 阈值（0~1）。
+    # 同一目标被多个框覆盖时，重叠面积超过此值的框会被抑制。
+    # 越低 → 保留框越少（适合目标间距大的场景）
+    # 越高 → 保留框越多（适合目标密集场景）
+    # 推荐范围：0.4 ~ 0.5
+    iou_threshold: 0.45
+
+    # 每帧最多保留的检测框数（防止异常时刷屏）
+    # 场景目标少时可设为 10；密集场景可适当调大
+    max_detections: 20
+
+    # ── 类别过滤 ──────────────────────────────────────────────────────────────
+    # 只检测指定类别（COCO 类别 ID 列表）。
+    # 留空（不填或 []）= 检测所有 80 个类别。
+    #
+    # 常用 COCO 类别 ID 速查：
+    #   0=person  1=bicycle  2=car  3=motorcycle  5=bus  7=truck
+    #   14=bird   15=cat     16=dog  39=bottle    56=chair  60=dining table
+    #   62=tv     63=laptop  67=cell phone
+    #
+    # 示例——只检测人：
+    #   target_classes: [0]
+    # 示例——只检测人和各类车辆：
+    #   target_classes: [0, 1, 2, 3, 5, 7]
+    # 示例——检测所有类别（默认）：
+    #   target_classes: []
+    target_classes: []
+
+    # ── 深度测距 ──────────────────────────────────────────────────────────────
+    # 在检测框中心区域随机采样点数，取中值滤波后求均值。
+    # 越大越稳定，但计算量略增；建议 16 ~ 32
+    depth_sample_count: 24
+
+    # ── 推理分辨率 ────────────────────────────────────────────────────────────
+    # 送入模型前 resize 的目标尺寸（像素）。
+    # 0/0 = 使用原始图像尺寸（640×480），不做 resize。
+    # YOLOv5 要求宽高均为 32 的倍数，常用：320/416/512/640
+    # 越大精度越高，速度越慢
+    infer_width: 640
+    infer_height: 480
+
+    # ── 发布 topic ────────────────────────────────────────────────────────────
+    # JSON 检测结果（std_msgs/String）
+    pub_topic_results: "/detection/results"
+    # 带标注框 + 距离标签的图像（sensor_msgs/Image, BGR8）
+    pub_topic_annotated: "/detection/annotated_image"
+
+    # 是否发布带标注图像（false 可节省带宽/CPU）
+    publish_annotated: true
+
+    # ── 订阅 topic ────────────────────────────────────────────────────────────
+    # RealSense D435i 实际 topic 命名（由 d435i_bringup 重映射后的名称）
+    sub_topic_rgb:   "/camera/camera/color/image_raw"
+    sub_topic_depth: "/camera/camera/aligned_depth_to_color/image_raw"

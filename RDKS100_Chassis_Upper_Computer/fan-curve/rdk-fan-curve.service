@@ -1,0 +1,18 @@
+[Unit]
+Description=RDK S100 EMC2305 Fan Temperature Curve
+Documentation=file:///home/sunrise/rdks100_slam/fan-curve/README.md
+After=multi-user.target
+Conflicts=shutdown.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/sunrise/rdks100_slam/fan-curve/fan_curve.py
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+# hwmon 节点通常 root:root 0755，需要 root 才能写 pwm1
+User=root
+
+[Install]
+WantedBy=multi-user.target

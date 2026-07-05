@@ -1,0 +1,8 @@
+backend/venv/
+frontend/node_modules/
+LivoxViewer_2.5.5_Ubuntu/
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+*.pyc
+__pycache__/

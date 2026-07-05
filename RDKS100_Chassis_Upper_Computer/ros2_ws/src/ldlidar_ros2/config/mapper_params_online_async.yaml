@@ -1,0 +1,85 @@
+# slam_toolbox 在线异步建图配置
+# 适用于手持雷达建图场景
+
+slam_toolbox:
+  ros__parameters:
+
+    # Plugin params
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # ROS Parameters
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_link
+    scan_topic: /scan
+    use_map_saver: true
+    mode: mapping  # localization
+
+    # 如果没有里程计，必须设置为 true
+    # 手持雷达建图场景下没有轮式里程计
+    use_scan_matching: true
+    use_scan_barycenter: true
+    
+    # 最小移动距离和角度才处理新的扫描
+    # 手持移动建议设置较小的值以获得更密集的地图
+    # 降低阈值让SLAM更容易检测到移动
+    minimum_travel_distance: 0.1  # 米（从0.2降低到0.1）
+    minimum_travel_heading: 0.1   # 弧度（从0.2降低到0.1，约5.7度）
+    
+    # 扫描匹配参数
+    scan_buffer_size: 10
+    scan_buffer_maximum_scan_distance: 10.0
+    link_match_minimum_response_fine: 0.1  
+    link_scan_maximum_distance: 1.5
+    loop_search_maximum_distance: 3.0
+    do_loop_closing: true 
+    loop_match_minimum_chain_size: 10           
+    loop_match_maximum_variance_coarse: 3.0  
+    loop_match_minimum_response_coarse: 0.35    
+    loop_match_minimum_response_fine: 0.45
+
+    # 相关性搜索空间参数 - 增大搜索范围
+    correlation_search_space_dimension: 1.0  # 从0.5增加到1.0
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1 
+
+    # 回环检测参数
+    loop_search_space_dimension: 8.0
+    loop_search_space_resolution: 0.05
+    loop_search_space_smear_deviation: 0.03
+
+    # 扫描匹配器参数
+    distance_variance_penalty: 0.5      
+    angle_variance_penalty: 1.0    
+
+    fine_search_angle_offset: 0.00349     
+    coarse_search_angle_offset: 0.349   
+    coarse_angle_resolution: 0.0349        
+    minimum_angle_penalty: 0.9
+    minimum_distance_penalty: 0.5
+    use_response_expansion: true
+    
+    # 地图更新参数
+    map_update_interval: 1.0  # 秒，地图发布频率（从2.0降低到1.0，更频繁更新）
+    resolution: 0.05  # 地图分辨率，5cm
+    max_laser_range: 12.0  # LD14P最大量程12米
+    minimum_time_interval: 0.1  # 处理扫描的最小时间间隔（从0.5降低到0.1）
+    
+    # TF相关
+    transform_publish_period: 0.02  # 50Hz发布TF
+    tf_buffer_duration: 30.0
+    stack_size_to_use: 40000000  # 栈大小
+    enable_interactive_mode: true  # 启用交互模式，可以在RViz中调整
+    
+    # 调试参数
+    throttle_scans: 1  # 处理每一帧扫描
+    transform_timeout: 0.2
+    
+    # 其他
+    debug_logging: false
+    max_laser_range: 12.0
